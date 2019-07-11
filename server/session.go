@@ -38,12 +38,12 @@ func NewSession(proto string) (*Session, error) {
 		return nil, fmt.Errorf("occamy-lib: new client error: %v", err)
 	}
 
-	sess := &Session{client: cli}
-	if err = sess.initialize(proto); err != nil {
-		sess.Close()
+	s := &Session{client: cli}
+	if err = s.initialize(proto); err != nil {
+		s.close()
 		return nil, fmt.Errorf("occamy-lib: session initialization failed with error: %v", err)
 	}
-	return sess, nil
+	return s, nil
 }
 
 // ID reports the session id
@@ -55,50 +55,53 @@ func (s *Session) ID() string {
 // reading/writing from the socket via read/write threads. The given socket,
 // parser, and any associated resources will be freed unless the user is not
 // added successfully.
-func (s *Session) Join(ws *websocket.Conn, conf *config.JWT, owner bool) error {
+func (s *Session) Join(ws *websocket.Conn, jwt *config.JWT, owner bool) (err error) {
+	defer s.close()
+	lib.ResetErrors()
 
+	// 1. prepare socket pair
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
 		return fmt.Errorf("occamy-proxy: new socket pair error: %v", err)
 	}
-	lib.ResetErrors()
 
-	// 1. user thread
-	go func(fd int, owner bool) {
-		defer s.Close()
+	// 2. create guac socket using fds[0]
+	sock, err := lib.NewSocket(fds[0])
+	if err != nil {
+		logrus.Errorf("occamy-lib: create guac socket error: %v", err)
+		return
+	}
+	defer sock.Close()
 
-		sock, err := lib.NewSocket(fd)
-		if err != nil {
-			logrus.Errorf("occamy-lib: create guac socket error: %v", err)
-			return
-		}
-		defer sock.Close()
-		user, err := lib.NewUser(sock, s.client, owner)
-		if err != nil {
-			logrus.Errorf("occamy-lib: create guac user error: %v", err)
-			return
-		}
-		defer user.Close()
+	// 3. create guac user using created guac socket
+	u, err := lib.NewUser(sock, s.client, owner)
+	if err != nil {
+		logrus.Errorf("occamy-lib: create guac user error: %v", err)
+		return
+	}
+	defer u.Close()
 
-		atomic.AddUint64(&s.connectedUsers, 1)
-		defer atomic.AddUint64(&s.connectedUsers, ^uint64(0))
+	// 4. count new user
+	s.addUser()
+	defer s.delUser()
 
-		err = user.HandleConnection() // block until disconnect/completion
-		if err != nil {
+	// 5. user thread
+	go func(u *lib.User) {
+		// block until disconnect/completion
+		if err := u.HandleConnection(); err != nil {
 			logrus.Errorf("occamy-lib: handle user connection error: %v", err)
 		}
+	}(u)
 
-	}(fds[0], owner)
-
-	// 2. handshake
+	// 6. handshake using fds[1]
 	conn := protocol.NewInstructionIO(fds[1])
-	err = s.handshake(conn, ws, conf)
+	err = s.handshake(conn, ws, jwt)
 	if err != nil {
 		conn.Close()
 		return err
 	}
 
-	// 3. proxy io
+	// 7. proxy io
 	return s.serveIO(conn, ws)
 }
 
@@ -112,15 +115,22 @@ func (s *Session) initialize(proto string) error {
 	return nil
 }
 
-// Close ...
-func (s *Session) Close() {
+func (s *Session) addUser() {
+	atomic.AddUint64(&s.connectedUsers, 1)
+}
+
+func (s *Session) delUser() {
+	atomic.AddUint64(&s.connectedUsers, ^uint64(0))
+}
+
+func (s *Session) close() {
 	if atomic.LoadUint64(&s.connectedUsers) > 0 {
 		return
 	}
 	s.client.Close()
 }
 
-func (s *Session) handshake(conn *protocol.InstructionIO, ws *websocket.Conn, conf *config.JWT) error {
+func (s *Session) handshake(conn *protocol.InstructionIO, ws *websocket.Conn, jwt *config.JWT) error {
 	ins, err := conn.Read()
 	if err != nil {
 		return err
@@ -133,7 +143,7 @@ func (s *Session) handshake(conn *protocol.InstructionIO, ws *websocket.Conn, co
 	conn.Write(protocol.NewInstruction([]string{"image", ""}))
 
 	// prepare coresponding arg values
-	host, port, err := net.SplitHostPort(conf.Host)
+	host, port, err := net.SplitHostPort(jwt.Host)
 	if err != nil {
 		return err
 	}
@@ -148,9 +158,9 @@ func (s *Session) handshake(conn *protocol.InstructionIO, ws *websocket.Conn, co
 		case "port":
 			value = port
 		case "username":
-			value = conf.Username
+			value = jwt.Username
 		case "password":
-			value = conf.Password
+			value = jwt.Password
 		}
 		connectIns[i+1] = value
 	}

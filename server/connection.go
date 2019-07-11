@@ -52,7 +52,7 @@ type proxy struct {
 
 func (p *proxy) serve() {
 	server := &http.Server{
-		Handler: p.setupRouter(),
+		Handler: p.router(),
 		Addr:    fmt.Sprintf("%s", config.Runtime.Address),
 	}
 	go func() {
@@ -75,7 +75,7 @@ func (p *proxy) serve() {
 	return
 }
 
-func (p *proxy) setupRouter() (r *gin.Engine) {
+func (p *proxy) router() (r *gin.Engine) {
 	r = gin.Default()
 
 	jwtm, err := jwt.New(&jwt.GinJWTMiddleware{
@@ -136,14 +136,6 @@ func (p *proxy) setupRouter() (r *gin.Engine) {
 }
 
 func (p *proxy) serveWS(c *gin.Context) {
-	claims := jwt.ExtractClaims(c)
-	conf := &config.JWT{
-		Protocol: claims["protocol"].(string),
-		Host:     claims["host"].(string),
-		Username: claims["username"].(string),
-		Password: claims["password"].(string),
-	}
-
 	ws, err := p.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		logrus.Errorf("occamy-proxy: upgrade websocket failed: %v", err)
@@ -151,43 +143,50 @@ func (p *proxy) serveWS(c *gin.Context) {
 		return
 	}
 
-	err = p.routeConn(ws, conf)
+	claims := jwt.ExtractClaims(c)
+	jwt := &config.JWT{
+		Protocol: claims["protocol"].(string),
+		Host:     claims["host"].(string),
+		Username: claims["username"].(string),
+		Password: claims["password"].(string),
+	}
+	err = p.routeConn(ws, jwt)
 	if err != nil {
 		ws.WriteMessage(websocket.CloseMessage, []byte(err.Error()))
 	}
 	ws.Close()
 }
 
-func (p *proxy) routeConn(ws *websocket.Conn, conf *config.JWT) (err error) {
+func (p *proxy) routeConn(ws *websocket.Conn, jwt *config.JWT) (err error) {
 	// fast path
-	sess, ok := p.sessions[conf.GenerateID()]
+	sess, ok := p.sessions[jwt.GenerateID()]
 	if ok {
-		err = sess.Join(ws, conf, false)
+		err = sess.Join(ws, jwt, false)
 		return
 	}
 
 	// slow path
 	p.mu.Lock()
-	sess, ok = p.sessions[conf.GenerateID()]
+	sess, ok = p.sessions[jwt.GenerateID()]
 	if ok {
 		p.mu.Unlock()
-		err = sess.Join(ws, conf, false)
+		err = sess.Join(ws, jwt, false)
 		return
 	}
 
-	sess, err = NewSession(conf.Protocol)
+	sess, err = NewSession(jwt.Protocol)
 	if err != nil {
 		p.mu.Unlock()
 		return
 	}
 
-	p.sessions[conf.GenerateID()] = sess
+	p.sessions[jwt.GenerateID()] = sess
 	p.mu.Unlock()
 
 	logrus.Infof("occamy-proxy: new session was created: %s", sess.ID())
-	err = sess.Join(ws, conf, true) // block here
+	err = sess.Join(ws, jwt, true) // block here
 	p.mu.Lock()
-	delete(p.sessions, conf.GenerateID())
+	delete(p.sessions, jwt.GenerateID())
 	p.mu.Unlock()
 	return
 }
