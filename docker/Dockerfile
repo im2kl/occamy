@@ -46,7 +46,16 @@ ENV \
         make"
 RUN yum -y update                                                         && \
     yum -y install epel-release $RUNTIME_DEPENDENCIES $BUILD_DEPENDENCIES
+
 WORKDIR /go/src/github.com/changkun/occamy
+
+# build guacamole-server
+RUN git clone https://github.com/apache/guacamole-server.git ./guacamole && \
+    cd /go/src/github.com/changkun/occamy/guacamole && \
+    git checkout 0ffda8aaf0d4cd94f452a242f8a509e4bc86fea0 && \
+    # fix https://issues.apache.org/jira/plugins/servlet/mobile#issue/GUACAMOLE-213
+    echo "/usr/local/lib" >> /etc/ld.so.conf             && \
+    ./src/guacd-docker/bin/build-guacd.sh /go/src/github.com/changkun/occamy/guacamole
 
 RUN mkdir /go-download                                      && \
     cd /go-download                                         && \
@@ -59,12 +68,6 @@ ENV GOPATH=/go
 ENV PATH=$GOPATH/bin:$GOROOT/bin:$PATH
 
 COPY . .
-
-# build guacamole-server from local source
-RUN cd /go/src/github.com/changkun/occamy/guacamole && \
-    # fix https://issues.apache.org/jira/plugins/servlet/mobile#issue/GUACAMOLE-213
-    echo "/usr/local/lib" >> /etc/ld.so.conf             && \
-    ./src/guacd-docker/bin/build-guacd.sh /go/src/github.com/changkun/occamy/guacamole
 
 RUN go build -x -ldflags \
 "-X github.com/changkun/occamy/config.Version=v$(git describe --always --tags) \
