@@ -59,6 +59,18 @@ const (
 	clientLogTrace clientLogLevel = C.GUAC_LOG_TRACE
 )
 
+// ClientMouse ...
+type ClientMouse int
+
+// ClientMouse constants
+const (
+	ClientMouseLeft       ClientMouse = 0x01
+	ClientMouseMiddle     ClientMouse = 0x02
+	ClientMouseRight      ClientMouse = 0x04
+	ClientMouseScrollUp   ClientMouse = 0x08
+	ClientMouseScrollDown ClientMouse = 0x10
+)
+
 // clientLogLevelTable provides a mapping from configuration string to guacamole
 // libguac log level
 var clientLogLevelTable = map[string]clientLogLevel{
@@ -73,6 +85,9 @@ var clientLogLevelTable = map[string]clientLogLevel{
 type Client struct {
 	guacClient *C.struct_guac_client
 	once       sync.Once
+
+	users *User // list of all connected users
+	mu    sync.RWMutex
 }
 
 // NewClient creates a new guacamole client
@@ -82,6 +97,14 @@ func NewClient() (*Client, error) {
 		return nil, errors.New(errorStatus())
 	}
 	return &Client{guacClient: cli}, nil
+}
+
+// Running ...
+func (c *Client) Running() bool {
+	if int(c.guacClient.state) == 0 {
+		return true
+	}
+	return false
 }
 
 // Close closes the corresponding guacamole client
@@ -122,4 +145,16 @@ func (c *Client) LoadProtocolPlugin(proto string) error {
 // after calling c.LoadPlugin.
 func (c *Client) Identifier() string {
 	return C.GoString(c.guacClient.connection_id)
+}
+
+// ForeachUser ...
+func (c *Client) ForeachUser(callback UserCallback, data interface{}) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	u := client.users
+	for u != nil {
+		callback(u, data)
+		u = u.Next
+	}
 }

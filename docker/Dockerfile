@@ -59,8 +59,8 @@ RUN git clone https://github.com/apache/guacamole-server.git ./guacamole && \
 
 RUN mkdir /go-download                                      && \
     cd /go-download                                         && \
-    wget https://dl.google.com/go/go1.11.5.linux-amd64.tar.gz && \
-    tar -xvf go1.11.5.linux-amd64.tar.gz                      && \
+    wget https://dl.google.com/go/go1.12.7.linux-amd64.tar.gz && \
+    tar -xvf go1.12.7.linux-amd64.tar.gz                      && \
     mv go /usr/local && \
     cp /usr/lib64/glib-2.0/include/glibconfig.h /usr/include/glib-2.0/
 ENV GOROOT=/usr/local/go
